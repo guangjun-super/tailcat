@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -40,6 +41,7 @@ import (
 	"tailscale.com/tstest/integration"
 	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
+	"tailscale.com/types/views"
 	"tailscale.com/wgengine/filter"
 )
 
@@ -354,6 +356,61 @@ func TestTailcat(t *testing.T) {
 		t.Fatalf("DialTCP = %v, %v", conn, err)
 	}
 
+}
+
+func TestExcludedEndpointPrefixes(t *testing.T) {
+	t.Parallel()
+
+	dm := integration.RunDERPAndSTUN(t, mkLogger(t, "derpstun"), "127.0.0.1")
+	prefix := netip.MustParsePrefix("10.244.250.0/24")
+	s := &Server{
+		Region:                   dm.Regions[1],
+		Logf:                     mkLogger(t, "server"),
+		ExcludedEndpointPrefixes: []netip.Prefix{prefix},
+	}
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	c := &Client{
+		Server:                   s.TailcatAddr(),
+		Logf:                     mkLogger(t, "client"),
+		ExcludedEndpointPrefixes: []netip.Prefix{prefix},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.ensureStarted(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	excluded := netip.MustParseAddrPort("10.244.250.4:1234")
+	allowed := netip.MustParseAddrPort("192.0.2.1:1234")
+	for _, peer := range []struct {
+		name string
+		lb   *locoBackend
+	}{{"server", s.lb}, {"client", c.lb}} {
+		t.Run(peer.name, func(t *testing.T) {
+			peer.lb.sys.MagicSock.Get().SetStaticEndpoints(views.SliceOf([]netip.AddrPort{excluded, allowed}))
+			for {
+				peer.lb.mu.Lock()
+				endpoints := slices.Clone(peer.lb.eps)
+				peer.lb.mu.Unlock()
+				if slices.Contains(endpoints, allowed) {
+					if slices.Contains(endpoints, excluded) {
+						t.Fatalf("excluded endpoint %s is advertised in %v", excluded, endpoints)
+					}
+					break
+				}
+				select {
+				case <-ctx.Done():
+					t.Fatalf("allowed endpoint %s is missing from %v", allowed, endpoints)
+				case <-time.After(10 * time.Millisecond):
+				}
+			}
+		})
+	}
 }
 
 // TestStatusReportsPeers checks that Server.Status reports connected clients.

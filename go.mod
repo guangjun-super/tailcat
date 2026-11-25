@@ -109,3 +109,5 @@ require (
 	golang.zx2c4.com/wireguard/windows v1.0.1 // indirect
 	honnef.co/go/tools v0.8.1 // indirect
 )
+
+replace tailscale.com => github.com/guangjun-super/tailscale v0.0.0-20261125090231-8507b26d399f

@@ -488,6 +488,10 @@ type Server struct {
 	// process-wide in-memory cache is used.
 	DERPMapCache DERPMapCache
 
+	// ExcludedEndpointPrefixes omits addresses in these IP prefixes from
+	// direct WireGuard UDP endpoint discovery and selection. Set it before Start or Listen.
+	ExcludedEndpointPrefixes []netip.Prefix
+
 	// AllowClient, if non-nil, reports whether the client with node
 	// key k may connect. It is consulted when a client that is not
 	// already connected announces itself. A client it rejects is
@@ -729,7 +733,7 @@ func (s *Server) startLocked(ctx context.Context) error {
 		return false
 	}
 
-	if err := createEngine(logf, lb); err != nil {
+	if err := createEngine(logf, lb, s.ExcludedEndpointPrefixes); err != nil {
 		lb.Close()
 		return fmt.Errorf("createEngine: %w", err)
 	}
@@ -2002,7 +2006,7 @@ func newNetMon(bus *eventbus.Bus, logf logger.Logf) *netmon.Monitor {
 }
 
 // createEngine creates the wgengine.Engine with userspace networking.
-func createEngine(logf logger.Logf, lb *locoBackend) (err error) {
+func createEngine(logf logger.Logf, lb *locoBackend, excludedEndpointPrefixes []netip.Prefix) (err error) {
 	sys := &lb.sys
 	conf := wgengine.Config{
 		ListenPort:    0,
@@ -2014,6 +2018,8 @@ func createEngine(logf logger.Logf, lb *locoBackend) (err error) {
 		EventBus:      sys.Bus.Get(),
 		OnDERPRecv:    lb.onDERPRecv,
 		DERPAppName:   "tailcat-client",
+
+		ExcludedEndpointPrefixes: slices.Clone(excludedEndpointPrefixes),
 	}
 	if lb.isServer {
 		conf.DERPAppName = "tailcat-server"
@@ -2067,6 +2073,10 @@ type Client struct {
 	// process-wide in-memory cache is used. If set, it must be set
 	// before the client's first use.
 	DERPMapCache DERPMapCache
+
+	// ExcludedEndpointPrefixes omits addresses in these IP prefixes from
+	// direct WireGuard UDP endpoint discovery and selection. Set it before the client's first use.
+	ExcludedEndpointPrefixes []netip.Prefix
 
 	lb       *locoBackend
 	ci       ConnInfo      // of server
@@ -2160,7 +2170,7 @@ func (c *Client) initLocked() error {
 		return true // client ignores MeowPing
 	}
 
-	if err := createEngine(logf, lb); err != nil {
+	if err := createEngine(logf, lb, c.ExcludedEndpointPrefixes); err != nil {
 		lb.Close()
 		return fmt.Errorf("createEngine: %w", err)
 	}
